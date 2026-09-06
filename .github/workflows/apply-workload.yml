@@ -54,7 +54,7 @@ jobs:
             definitions+=("$DEFINITION_PATH")
           else
             while IFS= read -r path; do
-              [[ "$path" == workloads/*/aws/*/terraform.tfvars.json ]] || continue
+              [[ "$path" == workloads/*/aws/*/*/terraform.tfvars.json ]] || continue
               definitions+=("$path")
             done < <(
               if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
@@ -98,18 +98,30 @@ jobs:
           DEFINITION_PATH: ${{ matrix.definition }}
         run: |
           set -euo pipefail
-          [[ "$DEFINITION_PATH" =~ ^workloads/([A-Za-z0-9][A-Za-z0-9_-]{0,31})/aws/([A-Za-z0-9][A-Za-z0-9_-]{0,47})/terraform\.tfvars\.json$ ]]
+          [[ "$DEFINITION_PATH" =~ ^workloads/([A-Za-z0-9][A-Za-z0-9_-]{0,31})/aws/(ubuntu24|win2025)/([A-Za-z0-9][A-Za-z0-9_-]{0,47})/terraform\.tfvars\.json$ ]]
           workload_from_path="${BASH_REMATCH[1]}"
-          server_from_path="${BASH_REMATCH[2]}"
+          os_from_path="${BASH_REMATCH[2]}"
+          server_from_path="${BASH_REMATCH[3]}"
           test -f "$DEFINITION_PATH"
+
+          case "$os_from_path" in
+            ubuntu24)
+              expected_os="ubuntu-24.04"
+              ;;
+            win2025)
+              expected_os="windows-2025"
+              ;;
+          esac
 
           jq -e \
             --arg account "$AWS_TARGET_ACCOUNT_ID" \
+            --arg os "$expected_os" \
             --arg workload "$workload_from_path" \
             --arg server "$server_from_path" \
             'type == "object" and
              .workload == $workload and
              .server_name == $server and
+             .os == $os and
              (.template_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
              .aws_account_id == $account and
              (.aws_region | test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and

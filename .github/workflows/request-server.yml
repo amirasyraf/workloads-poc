@@ -110,7 +110,19 @@ jobs:
             (( ROOT_VOLUME_SIZE >= 30 ))
           fi
 
-          definition_path="workloads/$WORKLOAD/aws/$SERVER_NAME/terraform.tfvars.json"
+          case "$OS" in
+            ubuntu-24.04)
+              os_folder="ubuntu24"
+              ;;
+            windows-2025)
+              os_folder="win2025"
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+          definition_path="workloads/$WORKLOAD/aws/$os_folder/$SERVER_NAME/terraform.tfvars.json"
           if [[ "$DESIRED_STATE" == "absent" && ! -f "$definition_path" ]]; then
             printf 'Cannot mark a definition absent before it exists: %s\n' "$definition_path" >&2
             exit 1
