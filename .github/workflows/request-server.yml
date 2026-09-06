@@ -169,8 +169,10 @@ jobs:
           mkdir -p "$(dirname "$DEFINITION_PATH")"
 
           if [[ "$DESIRED_STATE" == "absent" ]]; then
-            jq --arg instance_name "$INSTANCE_NAME" \
-              '.desired_state = "absent" | .instance_name = $instance_name' \
+            jq \
+              --arg instance_name "$INSTANCE_NAME" \
+              --arg template_version "$TEMPLATE_VERSION" \
+              '.desired_state = "absent" | .instance_name = $instance_name | .template_version = $template_version' \
               "$DEFINITION_PATH" > "$RUNNER_TEMP/definition.json"
           else
             ami_id="$(aws ssm get-parameter \
