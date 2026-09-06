@@ -163,6 +163,7 @@ jobs:
             --arg account "$AWS_TARGET_ACCOUNT_ID" \
             --arg os "$OS_FOLDER" \
             '(.os == $os) and
+             (.instance_name | strings | test("^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}$")) and
              (.aws_account_id == $account) and
              (.aws_region | test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and
              (.ami_id | test("^ami-[0-9a-f]{8,17}$")) and
