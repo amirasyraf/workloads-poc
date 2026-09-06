@@ -127,11 +127,13 @@ jobs:
           template_version="$(jq -r '.template_version' "$DEFINITION_PATH")"
           state_key="${DEFINITION_PATH%/terraform.tfvars.json}/terraform.tfstate"
           template_dir=".workload-template/$provider_from_path"
-          printf 'state_key=%s\n' "$state_key" >> "$GITHUB_OUTPUT"
-          printf 'provider=%s\n' "$provider_from_path" >> "$GITHUB_OUTPUT"
-          printf 'os_folder=%s\n' "$os_from_path" >> "$GITHUB_OUTPUT"
-          printf 'template_dir=%s\n' "$template_dir" >> "$GITHUB_OUTPUT"
-          printf 'template_version=%s\n' "$template_version" >> "$GITHUB_OUTPUT"
+          {
+            printf 'state_key=%s\n' "$state_key"
+            printf 'provider=%s\n' "$provider_from_path"
+            printf 'os_folder=%s\n' "$os_from_path"
+            printf 'template_dir=%s\n' "$template_dir"
+            printf 'template_version=%s\n' "$template_version"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Validate AWS definition
         if: steps.definition.outputs.provider == 'aws'
