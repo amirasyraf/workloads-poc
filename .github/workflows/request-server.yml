@@ -29,20 +29,14 @@ on:
         options:
           - ubuntu-24.04
           - windows-2025
-      aws_account_id:
-        description: Target AWS account ID
-        required: true
-        default: "879381279522"
-        type: string
       aws_region:
         description: Target AWS region
         required: true
         default: ap-southeast-1
         type: string
       subnet_id:
-        description: Existing subnet in the target account
+        description: Existing subnet in account 134584031874
         required: true
-        default: subnet-0efea2a99537a510a
         type: string
       instance_type:
         description: EC2 instance type
@@ -89,7 +83,7 @@ jobs:
       - name: Validate request
         id: request
         env:
-          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
           AWS_REGION: ${{ inputs.aws_region }}
           DESIRED_STATE: ${{ inputs.desired_state }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
@@ -104,7 +98,7 @@ jobs:
 
           [[ "$WORKLOAD" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
           [[ "$SERVER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$ ]]
-          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_ACCOUNT_ID" == "134584031874" ]]
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
           [[ "$SUBNET_ID" =~ ^subnet-[0-9a-f]{8,17}$ ]]
           [[ "$INSTANCE_TYPE" =~ ^[a-z0-9][a-z0-9.-]*$ ]]
@@ -132,7 +126,7 @@ jobs:
 
       - name: Write definition
         env:
-          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
           AWS_REGION: ${{ inputs.aws_region }}
           DESIRED_STATE: ${{ inputs.desired_state }}
           DEFINITION_PATH: ${{ steps.request.outputs.definition_path }}

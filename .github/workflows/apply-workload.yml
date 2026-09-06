@@ -94,6 +94,7 @@ jobs:
       - name: Validate definition
         id: definition
         env:
+          AWS_TARGET_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
           DEFINITION_PATH: ${{ matrix.definition }}
         run: |
           set -euo pipefail
@@ -103,13 +104,14 @@ jobs:
           test -f "$DEFINITION_PATH"
 
           jq -e \
+            --arg account "$AWS_TARGET_ACCOUNT_ID" \
             --arg workload "$workload_from_path" \
             --arg server "$server_from_path" \
             'type == "object" and
              .workload == $workload and
              .server_name == $server and
              (.template_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-             (.aws_account_id | test("^[0-9]{12}$")) and
+             .aws_account_id == $account and
              (.aws_region | test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and
              (.desired_state == "present" or .desired_state == "absent") and
              (.os == "ubuntu-24.04" or .os == "windows-2025") and

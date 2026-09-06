@@ -51,13 +51,14 @@ workloads/
 | `AWS_OIDC_ROLE_ARN` | `arn:aws:iam::134584031874:role/github-aws-role` | GitHub OIDC role in the state account |
 | `AWS_STATE_ACCOUNT_ID` | `134584031874` | Account allowed to own the backend bucket |
 | `AWS_STATE_REGION` | `ap-southeast-1` | Region containing the state bucket |
+| `AWS_TARGET_ACCOUNT_ID` | `134584031874` | Only account in which workloads may be created |
 | `TF_STATE_BUCKET` | `amirasyraf-workloads-poc-tfstate-134584031874` | Globally unique S3 bucket name |
-| `TEMPLATE_VERSION` | `v0.1.0` | Template used for new manual requests |
+| `TEMPLATE_VERSION` | `v0.2.0` | Template used for new manual requests |
 
 AWS authentication uses OIDC only. No static AWS access keys are required or
-supported. The OIDC role accesses S3 in the state account. The Terraform AWS
-provider then assumes `AWSControlTowerExecution` in the account named by each
-definition.
+supported. Both state and workloads are restricted to the `amirasyraf` account
+(`134584031874`). Terraform's AWS provider rejects credentials for any other
+account; no cross-account role assumption is used.
 
 ## Local Tools
 
@@ -85,9 +86,9 @@ validates the request, resolves the current vendor AMI through AWS's public SSM
 parameter, pins that AMI ID in the JSON definition, commits the file to
 `definitions`, and explicitly dispatches reconciliation.
 
-The supplied defaults target the non-production `aws-free1` account and its
-public `ap-southeast-1a` subnet. The managed security group has no ingress. Human
-access is through AWS Systems Manager Session Manager.
+The request requires an existing subnet from account `134584031874`; there is no
+cross-account option or subnet default. The managed security group has no
+ingress. Human access is through AWS Systems Manager Session Manager.
 
 The resulting path is:
 
@@ -104,8 +105,7 @@ concurrency is serialized per server.
 | Field | Required | Description |
 | --- | --- | --- |
 | `template_version` | yes | Immutable `workloads-templates-poc` release tag |
-| `aws_account_id` | yes | Target 12-digit AWS account ID |
-| `aws_assume_role_name` | no | Target role; defaults to `AWSControlTowerExecution` |
+| `aws_account_id` | yes | Must be `134584031874` |
 | `aws_region` | yes | Target AWS region |
 | `workload` | yes | Stable owning workload identifier |
 | `server_name` | yes | Stable server identifier within the workload |

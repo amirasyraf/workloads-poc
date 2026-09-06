@@ -35,22 +35,6 @@ jobs:
           test -n "$AWS_STATE_REGION"
           test -n "$TF_STATE_BUCKET"
 
-      - name: Report OIDC claims
-        uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71 # v9.0.0
-        with:
-          script: |
-            const token = await core.getIDToken('sts.amazonaws.com');
-            const claims = JSON.parse(
-              Buffer.from(token.split('.')[1], 'base64url').toString(),
-            );
-            core.info(JSON.stringify({
-              aud: claims.aud,
-              ref: claims.ref,
-              repository: claims.repository,
-              sub: claims.sub,
-              workflow_ref: claims.workflow_ref,
-            }));
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
