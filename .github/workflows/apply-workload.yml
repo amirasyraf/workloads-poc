@@ -94,7 +94,6 @@ jobs:
       - name: Validate definition
         id: definition
         env:
-          AWS_TARGET_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
           DEFINITION_PATH: ${{ matrix.definition }}
         run: |
           set -euo pipefail
@@ -135,31 +134,34 @@ jobs:
             printf 'template_version=%s\n' "$template_version"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Check out released template
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: amirasyraf/workloads-templates-poc
+          ref: ${{ steps.definition.outputs.template_version }}
+          path: .workload-template
+
       - name: Validate AWS definition
         if: steps.definition.outputs.provider == 'aws'
         env:
           AWS_TARGET_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
+          CATALOG_FILE: .workload-template/catalog/platforms.json
           DEFINITION_PATH: ${{ matrix.definition }}
           OS_FOLDER: ${{ steps.definition.outputs.os_folder }}
+          PROVIDER: ${{ steps.definition.outputs.provider }}
         run: |
           set -euo pipefail
+          test -f "$CATALOG_FILE"
 
-          case "$OS_FOLDER" in
-            ubuntu24)
-              expected_os="ubuntu-24.04"
-              ;;
-            win2025)
-              expected_os="windows-2025"
-              ;;
-            *)
-              printf 'Unsupported AWS OS directory: %s\n' "$OS_FOLDER" >&2
-              exit 1
-              ;;
-          esac
+          jq -e \
+            --arg provider "$PROVIDER" \
+            --arg os "$OS_FOLDER" \
+            '.platforms[$provider].operating_systems[$os] | type == "string" and length > 0' \
+            "$CATALOG_FILE" >/dev/null
 
           jq -e \
             --arg account "$AWS_TARGET_ACCOUNT_ID" \
-            --arg os "$expected_os" \
+            --arg os "$OS_FOLDER" \
             '(.os == $os) and
              (.aws_account_id == $account) and
              (.aws_region | test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and
@@ -167,16 +169,8 @@ jobs:
              (.subnet_id | test("^subnet-[0-9a-f]{8,17}$")) and
              (.instance_type | type == "string" and length > 0) and
              (.associate_public_ip_address | type == "boolean") and
-             (.root_volume_size | type == "number" and . >= 8 and . <= 16384 and floor == .) and
-             (.os != "windows-2025" or .root_volume_size >= 30)' \
+             (.root_volume_size | type == "number" and . >= 8 and . <= 16384 and floor == .)' \
             "$DEFINITION_PATH" >/dev/null
-
-      - name: Check out released template
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: amirasyraf/workloads-templates-poc
-          ref: ${{ steps.definition.outputs.template_version }}
-          path: .workload-template
 
       - name: Verify provider template root
         env:

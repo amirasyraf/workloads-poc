@@ -97,7 +97,9 @@ The current request harness exposes the AWS adapter and defaults to public subne
 `subnet-0a1d48f2ff2bd0332` in the existing
 `amirasyraf-amirasyraf-ap-southeast-1` VPC. There is no cross-account option. The
 managed security group has no ingress. Human access is through AWS Systems
-Manager Session Manager.
+Manager Session Manager. The `os` input is a catalog key such as `ubuntu24` or
+`win2025`; the pinned template release supplies the SSM parameter used to resolve
+the AMI.
 
 The resulting path is:
 
@@ -119,7 +121,7 @@ concurrency is serialized per server.
 | `workload` | yes | Stable owning workload identifier |
 | `server_name` | yes | Stable server identifier within the workload |
 | `desired_state` | yes | `present` or `absent` |
-| `os` | yes | `ubuntu-24.04` or `windows-2025` |
+| `os` | yes | OS catalog key defined by the pinned template release, such as `ubuntu24` |
 | `ami_id` | yes | Pinned vendor-owned AMI ID |
 | `subnet_id` | yes | Existing target-account subnet |
 | `instance_type` | yes | EC2 instance type compatible with the AMI architecture |
@@ -132,9 +134,10 @@ concurrency is serialized per server.
 The AMI is pinned at request time so an unrelated definition update cannot
 silently replace a stateful server after a vendor publishes a new image.
 
-The supported provider directory is currently `aws`. The supported OS directories
-are `ubuntu24` and `win2025`. The pipeline verifies that the provider and OS
-directories agree with the definition and selects the matching provider root from
+The supported provider directory is currently `aws`. The OS directories and image
+resolution parameters are defined by `catalog/platforms.json` in the pinned
+template release. The pipeline verifies that the OS directory is a catalog key,
+that it agrees with the definition, and selects the matching provider root from
 the released template repository.
 
 ## Update Or Destroy

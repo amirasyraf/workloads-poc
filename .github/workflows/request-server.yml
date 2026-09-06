@@ -22,13 +22,10 @@ on:
           - present
           - absent
       os:
-        description: Operating system
+        description: OS catalog key from the pinned template release
         required: true
-        default: ubuntu-24.04
-        type: choice
-        options:
-          - ubuntu-24.04
-          - windows-2025
+        default: ubuntu24
+        type: string
       aws_region:
         description: Target AWS region
         required: true
@@ -103,32 +100,38 @@ jobs:
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
           [[ "$SUBNET_ID" =~ ^subnet-[0-9a-f]{8,17}$ ]]
           [[ "$INSTANCE_TYPE" =~ ^[a-z0-9][a-z0-9.-]*$ ]]
+          [[ "$OS" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]
           [[ "$TEMPLATE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           (( ROOT_VOLUME_SIZE >= 8 && ROOT_VOLUME_SIZE <= 16384 ))
 
-          if [[ "$OS" == "windows-2025" ]]; then
-            (( ROOT_VOLUME_SIZE >= 30 ))
-          fi
-
-          case "$OS" in
-            ubuntu-24.04)
-              os_folder="ubuntu24"
-              ;;
-            windows-2025)
-              os_folder="win2025"
-              ;;
-            *)
-              exit 1
-              ;;
-          esac
-
-          definition_path="workloads/$WORKLOAD/aws/$os_folder/$SERVER_NAME/terraform.tfvars.json"
+          definition_path="workloads/$WORKLOAD/aws/$OS/$SERVER_NAME/terraform.tfvars.json"
           if [[ "$DESIRED_STATE" == "absent" && ! -f "$definition_path" ]]; then
             printf 'Cannot mark a definition absent before it exists: %s\n' "$definition_path" >&2
             exit 1
           fi
 
           printf 'definition_path=%s\n' "$definition_path" >> "$GITHUB_OUTPUT"
+
+      - name: Check out pinned template catalog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: amirasyraf/workloads-templates-poc
+          ref: ${{ vars.TEMPLATE_VERSION }}
+          path: .workload-template
+
+      - name: Validate AWS catalog entry
+        id: catalog
+        env:
+          CATALOG_FILE: .workload-template/catalog/platforms.json
+          OS: ${{ inputs.os }}
+        run: |
+          set -euo pipefail
+          test -f "$CATALOG_FILE"
+          image_parameter="$(jq -er \
+            --arg os "$OS" \
+            '.platforms.aws.operating_systems[$os] | select(type == "string" and length > 0)' \
+            "$CATALOG_FILE")"
+          printf 'image_parameter=%s\n' "$image_parameter" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         if: inputs.desired_state == 'present'
@@ -145,6 +148,7 @@ jobs:
           DEFINITION_PATH: ${{ steps.request.outputs.definition_path }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           OS: ${{ inputs.os }}
+          AMI_PARAMETER: ${{ steps.catalog.outputs.image_parameter }}
           PUBLIC_IP: ${{ inputs.associate_public_ip_address }}
           REQUESTED_BY: ${{ github.actor }}
           ROOT_VOLUME_SIZE: ${{ inputs.root_volume_size }}
@@ -159,20 +163,8 @@ jobs:
           if [[ "$DESIRED_STATE" == "absent" ]]; then
             jq '.desired_state = "absent"' "$DEFINITION_PATH" > "$RUNNER_TEMP/definition.json"
           else
-            case "$OS" in
-              ubuntu-24.04)
-                ami_parameter="/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-                ;;
-              windows-2025)
-                ami_parameter="/aws/service/ami-windows-latest/Windows_Server-2025-English-Full-Base"
-                ;;
-              *)
-                exit 1
-                ;;
-            esac
-
             ami_id="$(aws ssm get-parameter \
-              --name "$ami_parameter" \
+              --name "$AMI_PARAMETER" \
               --region "$AWS_REGION" \
               --query 'Parameter.Value' \
               --output text)"
