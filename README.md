@@ -14,7 +14,7 @@ Only AWS is implemented in this POC.
 IDP or manual workflow
         |
         v
-workloads/<workload>/aws/<server>/terraform.tfvars.json
+workloads/<workload>/aws/<os>/<server>/terraform.tfvars.json
         |
         v
 apply-workload.yml on the definitions branch
@@ -28,8 +28,9 @@ apply-workload.yml on the definitions branch
 mutable branch used by the IDP simulation and by reconciliation. The workflows
 exist on both branches so pushes to `definitions` are actionable.
 
-The server path deliberately excludes the OS. A server's identity and state key
-must remain stable when mutable properties such as OS or instance type change.
+The OS family and version are part of immutable server identity. Changing OS
+means requesting a separate server definition and state, never modifying an
+existing instance in place.
 
 ## Repository Layout
 
@@ -41,7 +42,7 @@ must remain stable when mutable properties such as OS or instance type change.
   request-server.yml       # manual IDP simulation
 mise.toml                  # pinned local and CI tool versions
 workloads/
-  <workload>/aws/<server>/terraform.tfvars.json
+  <workload>/aws/<os>/<server>/terraform.tfvars.json
 ```
 
 ## Repository Variables
@@ -53,7 +54,7 @@ workloads/
 | `AWS_STATE_REGION` | `ap-southeast-1` | Region containing the state bucket |
 | `AWS_TARGET_ACCOUNT_ID` | `134584031874` | Only account in which workloads may be created |
 | `TF_STATE_BUCKET` | `amirasyraf-workloads-poc-tfstate-134584031874` | Globally unique S3 bucket name |
-| `TEMPLATE_VERSION` | `v0.2.0` | Template used for new manual requests |
+| `TEMPLATE_VERSION` | `v0.3.0` | Template used for new manual requests |
 
 AWS authentication uses OIDC only. No static AWS access keys are required or
 supported. Both state and workloads are restricted to the `amirasyraf` account
@@ -94,7 +95,7 @@ Manager Session Manager.
 The resulting path is:
 
 ```text
-workloads/<workload>/aws/<server_name>/terraform.tfvars.json
+workloads/<workload>/aws/<os>/<server_name>/terraform.tfvars.json
 ```
 
 Direct pushes that add or modify definitions on `definitions` also trigger
@@ -124,10 +125,13 @@ concurrency is serialized per server.
 The AMI is pinned at request time so an unrelated definition update cannot
 silently replace a stateful server after a vendor publishes a new image.
 
+The supported OS directories are `ubuntu24` and `win2025`. The pipeline verifies
+that the directory agrees with the `os` value inside the definition.
+
 ## Update Or Destroy
 
-Re-run the request workflow with the same workload and server name to replace the
-definition and reconcile changes.
+Re-run the request workflow with the same workload, OS, and server name to
+replace the definition and reconcile changes.
 
 To destroy a server, run it with `desired_state` set to `absent`. The workflow
 only changes that field on the existing definition, preserving the original
