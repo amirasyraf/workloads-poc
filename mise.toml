@@ -1,0 +1,10 @@
+[tools]
+actionlint = "1.7.12"
+awscli = "2.34.0"
+github-cli = "2.87.3"
+jq = "1.8.1"
+terraform = "1.14.8"
+
+[tasks.check]
+description = "Validate GitHub Actions workflows"
+run = "actionlint .github/workflows/*.yml"

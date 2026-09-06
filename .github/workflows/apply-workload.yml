@@ -1,0 +1,171 @@
+name: Apply workloads
+
+on:
+  push:
+    branches:
+      - definitions
+    paths:
+      - workloads/**/terraform.tfvars.json
+  workflow_dispatch:
+    inputs:
+      definition_path:
+        description: Exact definition path to reconcile
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_STATE_REGION: ${{ vars.AWS_STATE_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  discover:
+    name: Discover changed definitions
+    runs-on: ubuntu-latest
+    outputs:
+      definitions: ${{ steps.changes.outputs.definitions }}
+    steps:
+      - name: Check out definitions branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: definitions
+
+      - name: Install project tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: jq
+
+      - name: Collect definitions
+        id: changes
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          DEFINITION_PATH: ${{ inputs.definition_path }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          definitions=()
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            definitions+=("$DEFINITION_PATH")
+          else
+            while IFS= read -r path; do
+              [[ "$path" == workloads/*/aws/*/terraform.tfvars.json ]] || continue
+              definitions+=("$path")
+            done < <(
+              if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+                git diff-tree --no-commit-id --name-only --diff-filter=AM -r "$GITHUB_SHA"
+              else
+                git diff --name-only --diff-filter=AM "$BEFORE_SHA" "$GITHUB_SHA"
+              fi
+            )
+          fi
+
+          definitions_json="$(printf '%s\n' "${definitions[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
+          printf 'definitions=%s\n' "$definitions_json" >> "$GITHUB_OUTPUT"
+
+  apply:
+    name: Apply ${{ matrix.definition }}
+    needs: discover
+    if: needs.discover.outputs.definitions != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        definition: ${{ fromJSON(needs.discover.outputs.definitions) }}
+    concurrency:
+      group: apply-${{ matrix.definition }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out definitions branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: definitions
+
+      - name: Install project tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: terraform
+
+      - name: Validate definition
+        id: definition
+        env:
+          DEFINITION_PATH: ${{ matrix.definition }}
+        run: |
+          set -euo pipefail
+          [[ "$DEFINITION_PATH" =~ ^workloads/([A-Za-z0-9][A-Za-z0-9_-]{0,31})/aws/([A-Za-z0-9][A-Za-z0-9_-]{0,47})/terraform\.tfvars\.json$ ]]
+          workload_from_path="${BASH_REMATCH[1]}"
+          server_from_path="${BASH_REMATCH[2]}"
+          test -f "$DEFINITION_PATH"
+
+          jq -e \
+            --arg workload "$workload_from_path" \
+            --arg server "$server_from_path" \
+            'type == "object" and
+             .workload == $workload and
+             .server_name == $server and
+             (.template_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+             (.aws_account_id | test("^[0-9]{12}$")) and
+             (.aws_region | test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and
+             (.desired_state == "present" or .desired_state == "absent") and
+             (.os == "ubuntu-24.04" or .os == "windows-2025") and
+             (.ami_id | test("^ami-[0-9a-f]{8,17}$")) and
+             (.subnet_id | test("^subnet-[0-9a-f]{8,17}$")) and
+             (.instance_type | type == "string" and length > 0) and
+             (.associate_public_ip_address | type == "boolean") and
+             (.root_volume_size | type == "number" and . >= 8 and . <= 16384 and floor == .) and
+             (.os != "windows-2025" or .root_volume_size >= 30)' \
+            "$DEFINITION_PATH" >/dev/null
+
+          template_version="$(jq -r '.template_version' "$DEFINITION_PATH")"
+          state_key="${DEFINITION_PATH%/terraform.tfvars.json}/terraform.tfstate"
+          printf 'state_key=%s\n' "$state_key" >> "$GITHUB_OUTPUT"
+          printf 'template_version=%s\n' "$template_version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out released template
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: amirasyraf/workloads-templates-poc
+          ref: ${{ steps.definition.outputs.template_version }}
+          path: .workload-template
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          aws-region: ${{ env.AWS_STATE_REGION }}
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+
+      - name: Initialize Terraform
+        working-directory: .workload-template/aws
+        env:
+          STATE_KEY: ${{ steps.definition.outputs.state_key }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_STATE_REGION"
+
+      - name: Validate Terraform
+        working-directory: .workload-template/aws
+        run: terraform validate
+
+      - name: Plan Terraform
+        working-directory: .workload-template/aws
+        env:
+          DEFINITION_FILE: ${{ github.workspace }}/${{ matrix.definition }}
+        run: |
+          terraform plan -input=false -lock-timeout=5m \
+            -out=tfplan \
+            -var-file="$DEFINITION_FILE"
+
+      - name: Apply Terraform
+        working-directory: .workload-template/aws
+        run: terraform apply -input=false -lock-timeout=5m tfplan
+
+      - name: Publish outputs
+        working-directory: .workload-template/aws
+        run: terraform output

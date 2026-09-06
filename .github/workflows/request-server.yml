@@ -1,0 +1,238 @@
+name: Request AWS server
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Owning workload identifier
+        required: true
+        default: AppA
+        type: string
+      server_name:
+        description: Stable server identifier
+        required: true
+        default: server-1
+        type: string
+      desired_state:
+        description: Create/update or destroy the server
+        required: true
+        default: present
+        type: choice
+        options:
+          - present
+          - absent
+      os:
+        description: Operating system
+        required: true
+        default: ubuntu-24.04
+        type: choice
+        options:
+          - ubuntu-24.04
+          - windows-2025
+      aws_account_id:
+        description: Target AWS account ID
+        required: true
+        default: "879381279522"
+        type: string
+      aws_region:
+        description: Target AWS region
+        required: true
+        default: ap-southeast-1
+        type: string
+      subnet_id:
+        description: Existing subnet in the target account
+        required: true
+        default: subnet-0efea2a99537a510a
+        type: string
+      instance_type:
+        description: EC2 instance type
+        required: true
+        default: t3.micro
+        type: string
+      root_volume_size:
+        description: Root volume size in GiB (Windows minimum is 30)
+        required: true
+        default: 20
+        type: number
+      associate_public_ip_address:
+        description: Assign a public IPv4 address
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  actions: write
+  contents: write
+  id-token: write
+
+concurrency:
+  group: request-server-definitions
+
+env:
+  AWS_STATE_REGION: ${{ vars.AWS_STATE_REGION }}
+
+jobs:
+  request:
+    name: Write server definition
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out definitions branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: definitions
+
+      - name: Install project tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: awscli github-cli jq
+
+      - name: Validate request
+        id: request
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_REGION: ${{ inputs.aws_region }}
+          DESIRED_STATE: ${{ inputs.desired_state }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          OS: ${{ inputs.os }}
+          ROOT_VOLUME_SIZE: ${{ inputs.root_volume_size }}
+          SERVER_NAME: ${{ inputs.server_name }}
+          SUBNET_ID: ${{ inputs.subnet_id }}
+          TEMPLATE_VERSION: ${{ vars.TEMPLATE_VERSION }}
+          WORKLOAD: ${{ inputs.workload }}
+        run: |
+          set -euo pipefail
+
+          [[ "$WORKLOAD" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
+          [[ "$SERVER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$ ]]
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
+          [[ "$SUBNET_ID" =~ ^subnet-[0-9a-f]{8,17}$ ]]
+          [[ "$INSTANCE_TYPE" =~ ^[a-z0-9][a-z0-9.-]*$ ]]
+          [[ "$TEMPLATE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          (( ROOT_VOLUME_SIZE >= 8 && ROOT_VOLUME_SIZE <= 16384 ))
+
+          if [[ "$OS" == "windows-2025" ]]; then
+            (( ROOT_VOLUME_SIZE >= 30 ))
+          fi
+
+          definition_path="workloads/$WORKLOAD/aws/$SERVER_NAME/terraform.tfvars.json"
+          if [[ "$DESIRED_STATE" == "absent" && ! -f "$definition_path" ]]; then
+            printf 'Cannot mark a definition absent before it exists: %s\n' "$definition_path" >&2
+            exit 1
+          fi
+
+          printf 'definition_path=%s\n' "$definition_path" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        if: inputs.desired_state == 'present'
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          aws-region: ${{ env.AWS_STATE_REGION }}
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+
+      - name: Write definition
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_REGION: ${{ inputs.aws_region }}
+          DESIRED_STATE: ${{ inputs.desired_state }}
+          DEFINITION_PATH: ${{ steps.request.outputs.definition_path }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          OS: ${{ inputs.os }}
+          PUBLIC_IP: ${{ inputs.associate_public_ip_address }}
+          REQUESTED_BY: ${{ github.actor }}
+          ROOT_VOLUME_SIZE: ${{ inputs.root_volume_size }}
+          SERVER_NAME: ${{ inputs.server_name }}
+          SUBNET_ID: ${{ inputs.subnet_id }}
+          TEMPLATE_VERSION: ${{ vars.TEMPLATE_VERSION }}
+          WORKLOAD: ${{ inputs.workload }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$DEFINITION_PATH")"
+
+          if [[ "$DESIRED_STATE" == "absent" ]]; then
+            jq '.desired_state = "absent"' "$DEFINITION_PATH" > "$RUNNER_TEMP/definition.json"
+          else
+            case "$OS" in
+              ubuntu-24.04)
+                ami_parameter="/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+                ;;
+              windows-2025)
+                ami_parameter="/aws/service/ami-windows-latest/Windows_Server-2025-English-Full-Base"
+                ;;
+              *)
+                exit 1
+                ;;
+            esac
+
+            ami_id="$(aws ssm get-parameter \
+              --name "$ami_parameter" \
+              --region "$AWS_REGION" \
+              --query 'Parameter.Value' \
+              --output text)"
+
+            jq -n \
+              --arg template_version "$TEMPLATE_VERSION" \
+              --arg aws_account_id "$AWS_ACCOUNT_ID" \
+              --arg aws_region "$AWS_REGION" \
+              --arg workload "$WORKLOAD" \
+              --arg server_name "$SERVER_NAME" \
+              --arg desired_state "$DESIRED_STATE" \
+              --arg os "$OS" \
+              --arg ami_id "$ami_id" \
+              --arg subnet_id "$SUBNET_ID" \
+              --arg instance_type "$INSTANCE_TYPE" \
+              --arg requested_by "$REQUESTED_BY" \
+              --argjson associate_public_ip_address "$PUBLIC_IP" \
+              --argjson root_volume_size "$ROOT_VOLUME_SIZE" \
+              '{
+                template_version: $template_version,
+                aws_account_id: $aws_account_id,
+                aws_region: $aws_region,
+                workload: $workload,
+                server_name: $server_name,
+                desired_state: $desired_state,
+                os: $os,
+                ami_id: $ami_id,
+                subnet_id: $subnet_id,
+                instance_type: $instance_type,
+                associate_public_ip_address: $associate_public_ip_address,
+                root_volume_size: $root_volume_size,
+                additional_security_group_ids: [],
+                additional_tags: {
+                  Environment: "poc",
+                  RequestedBy: $requested_by
+                }
+              }' > "$RUNNER_TEMP/definition.json"
+          fi
+
+          mv "$RUNNER_TEMP/definition.json" "$DEFINITION_PATH"
+
+      - name: Commit definition
+        id: commit
+        env:
+          DEFINITION_PATH: ${{ steps.request.outputs.definition_path }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "$DEFINITION_PATH"
+
+          if git diff --cached --quiet; then
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "Update $DEFINITION_PATH"
+          git push origin HEAD:definitions
+          printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch reconciliation
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          DEFINITION_PATH: ${{ steps.request.outputs.definition_path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run apply-workload.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref definitions \
+            -f "definition_path=$DEFINITION_PATH"
