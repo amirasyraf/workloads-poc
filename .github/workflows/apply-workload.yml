@@ -54,7 +54,7 @@ jobs:
             definitions+=("$DEFINITION_PATH")
           else
             while IFS= read -r path; do
-              [[ "$path" == workloads/*/aws/*/*/terraform.tfvars.json ]] || continue
+              [[ "$path" == workloads/*/*/*/*/terraform.tfvars.json ]] || continue
               definitions+=("$path")
             done < <(
               if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
@@ -98,35 +98,69 @@ jobs:
           DEFINITION_PATH: ${{ matrix.definition }}
         run: |
           set -euo pipefail
-          [[ "$DEFINITION_PATH" =~ ^workloads/([A-Za-z0-9][A-Za-z0-9_-]{0,31})/aws/(ubuntu24|win2025)/([A-Za-z0-9][A-Za-z0-9_-]{0,47})/terraform\.tfvars\.json$ ]]
+          [[ "$DEFINITION_PATH" =~ ^workloads/([A-Za-z0-9][A-Za-z0-9_-]{0,31})/([a-z0-9][a-z0-9_-]{0,31})/([a-z0-9][a-z0-9_-]{0,31})/([A-Za-z0-9][A-Za-z0-9_-]{0,47})/terraform\.tfvars\.json$ ]]
           workload_from_path="${BASH_REMATCH[1]}"
-          os_from_path="${BASH_REMATCH[2]}"
-          server_from_path="${BASH_REMATCH[3]}"
+          provider_from_path="${BASH_REMATCH[2]}"
+          os_from_path="${BASH_REMATCH[3]}"
+          server_from_path="${BASH_REMATCH[4]}"
           test -f "$DEFINITION_PATH"
 
-          case "$os_from_path" in
+          case "$provider_from_path" in
+            aws)
+              ;;
+            *)
+              printf 'No provider adapter is implemented for: %s\n' "$provider_from_path" >&2
+              exit 1
+              ;;
+          esac
+
+          jq -e \
+            --arg workload "$workload_from_path" \
+            --arg server "$server_from_path" \
+            'type == "object" and
+             (.template_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+             .workload == $workload and
+             .server_name == $server and
+             (.desired_state == "present" or .desired_state == "absent")' \
+            "$DEFINITION_PATH" >/dev/null
+
+          template_version="$(jq -r '.template_version' "$DEFINITION_PATH")"
+          state_key="${DEFINITION_PATH%/terraform.tfvars.json}/terraform.tfstate"
+          template_dir=".workload-template/$provider_from_path"
+          printf 'state_key=%s\n' "$state_key" >> "$GITHUB_OUTPUT"
+          printf 'provider=%s\n' "$provider_from_path" >> "$GITHUB_OUTPUT"
+          printf 'os_folder=%s\n' "$os_from_path" >> "$GITHUB_OUTPUT"
+          printf 'template_dir=%s\n' "$template_dir" >> "$GITHUB_OUTPUT"
+          printf 'template_version=%s\n' "$template_version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate AWS definition
+        if: steps.definition.outputs.provider == 'aws'
+        env:
+          AWS_TARGET_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
+          DEFINITION_PATH: ${{ matrix.definition }}
+          OS_FOLDER: ${{ steps.definition.outputs.os_folder }}
+        run: |
+          set -euo pipefail
+
+          case "$OS_FOLDER" in
             ubuntu24)
               expected_os="ubuntu-24.04"
               ;;
             win2025)
               expected_os="windows-2025"
               ;;
+            *)
+              printf 'Unsupported AWS OS directory: %s\n' "$OS_FOLDER" >&2
+              exit 1
+              ;;
           esac
 
           jq -e \
             --arg account "$AWS_TARGET_ACCOUNT_ID" \
             --arg os "$expected_os" \
-            --arg workload "$workload_from_path" \
-            --arg server "$server_from_path" \
-            'type == "object" and
-             .workload == $workload and
-             .server_name == $server and
-             .os == $os and
-             (.template_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-             .aws_account_id == $account and
+            '(.os == $os) and
+             (.aws_account_id == $account) and
              (.aws_region | test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and
-             (.desired_state == "present" or .desired_state == "absent") and
-             (.os == "ubuntu-24.04" or .os == "windows-2025") and
              (.ami_id | test("^ami-[0-9a-f]{8,17}$")) and
              (.subnet_id | test("^subnet-[0-9a-f]{8,17}$")) and
              (.instance_type | type == "string" and length > 0) and
@@ -135,11 +169,6 @@ jobs:
              (.os != "windows-2025" or .root_volume_size >= 30)' \
             "$DEFINITION_PATH" >/dev/null
 
-          template_version="$(jq -r '.template_version' "$DEFINITION_PATH")"
-          state_key="${DEFINITION_PATH%/terraform.tfvars.json}/terraform.tfstate"
-          printf 'state_key=%s\n' "$state_key" >> "$GITHUB_OUTPUT"
-          printf 'template_version=%s\n' "$template_version" >> "$GITHUB_OUTPUT"
-
       - name: Check out released template
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,14 +176,26 @@ jobs:
           ref: ${{ steps.definition.outputs.template_version }}
           path: .workload-template
 
-      - name: Configure AWS credentials
+      - name: Verify provider template root
+        env:
+          TEMPLATE_DIR: ${{ steps.definition.outputs.template_dir }}
+        run: test -d "$TEMPLATE_DIR"
+
+      - name: Configure S3 state credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          aws-region: ${{ env.AWS_STATE_REGION }}
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+
+      - name: Configure AWS workload credentials
+        if: steps.definition.outputs.provider == 'aws'
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           aws-region: ${{ env.AWS_STATE_REGION }}
           role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
 
       - name: Initialize Terraform
-        working-directory: .workload-template/aws
+        working-directory: ${{ steps.definition.outputs.template_dir }}
         env:
           STATE_KEY: ${{ steps.definition.outputs.state_key }}
         run: |
@@ -164,11 +205,11 @@ jobs:
             -backend-config="region=$AWS_STATE_REGION"
 
       - name: Validate Terraform
-        working-directory: .workload-template/aws
+        working-directory: ${{ steps.definition.outputs.template_dir }}
         run: terraform validate
 
       - name: Plan Terraform
-        working-directory: .workload-template/aws
+        working-directory: ${{ steps.definition.outputs.template_dir }}
         env:
           DEFINITION_FILE: ${{ github.workspace }}/${{ matrix.definition }}
         run: |
@@ -177,9 +218,9 @@ jobs:
             -var-file="$DEFINITION_FILE"
 
       - name: Apply Terraform
-        working-directory: .workload-template/aws
+        working-directory: ${{ steps.definition.outputs.template_dir }}
         run: terraform apply -input=false -lock-timeout=5m tfplan
 
       - name: Publish outputs
-        working-directory: .workload-template/aws
+        working-directory: ${{ steps.definition.outputs.template_dir }}
         run: terraform output
