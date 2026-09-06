@@ -1,12 +1,12 @@
 # workloads-poc
 
-GitOps proof of concept for provisioning stateful AWS compute from one JSON
-definition per server. It models an internal compute platform where an IDP writes
-definitions and a pipeline reconciles them with AWS.
+GitOps proof of concept for provisioning stateful compute from one JSON definition
+per server. It models an internal compute platform where an IDP writes definitions
+and a pipeline reconciles them with a provider adapter.
 
 The released Terraform roots live in
 [`amirasyraf/workloads-templates-poc`](https://github.com/amirasyraf/workloads-templates-poc).
-Only AWS is implemented in this POC.
+Only the AWS provider adapter is implemented in this POC.
 
 ## Architecture
 
@@ -19,10 +19,16 @@ workloads/<workload>/aws/<os>/<server>/terraform.tfvars.json
         v
 apply-workload.yml on the definitions branch
         |
-        +--> released AWS root from workloads-templates-poc
+        +--> released provider root from workloads-templates-poc
         +--> one S3 state object and lock file per server
         +--> EC2 + no-ingress security group + SSM role
 ```
+
+The reconciliation workflow parses the provider directory and checks out the
+matching released root as `.workload-template/<provider>`. The Terraform
+`init`, `validate`, `plan`, `apply`, and `output` steps are shared across
+providers. Provider authentication is an adapter step; AWS is the first adapter
+implemented. The selected S3 state backend is a separate state-service concern.
 
 `main` is the default branch and holds the platform code. `definitions` is the
 mutable branch used by the IDP simulation and by reconciliation. The workflows
@@ -42,7 +48,7 @@ existing instance in place.
   request-server.yml       # manual IDP simulation
 mise.toml                  # pinned local and CI tool versions
 workloads/
-  <workload>/aws/<os>/<server>/terraform.tfvars.json
+  <workload>/<provider>/<os>/<server>/terraform.tfvars.json
 ```
 
 ## Repository Variables
@@ -87,7 +93,8 @@ validates the request, resolves the current vendor AMI through AWS's public SSM
 parameter, pins that AMI ID in the JSON definition, commits the file to
 `definitions`, and explicitly dispatches reconciliation.
 
-The request defaults to public subnet `subnet-0a1d48f2ff2bd0332` in the existing
+The current request harness exposes the AWS adapter and defaults to public subnet
+`subnet-0a1d48f2ff2bd0332` in the existing
 `amirasyraf-amirasyraf-ap-southeast-1` VPC. There is no cross-account option. The
 managed security group has no ingress. Human access is through AWS Systems
 Manager Session Manager.
@@ -95,7 +102,7 @@ Manager Session Manager.
 The resulting path is:
 
 ```text
-workloads/<workload>/aws/<os>/<server_name>/terraform.tfvars.json
+workloads/<workload>/<provider>/<os>/<server_name>/terraform.tfvars.json
 ```
 
 Direct pushes that add or modify definitions on `definitions` also trigger
@@ -125,8 +132,10 @@ concurrency is serialized per server.
 The AMI is pinned at request time so an unrelated definition update cannot
 silently replace a stateful server after a vendor publishes a new image.
 
-The supported OS directories are `ubuntu24` and `win2025`. The pipeline verifies
-that the directory agrees with the `os` value inside the definition.
+The supported provider directory is currently `aws`. The supported OS directories
+are `ubuntu24` and `win2025`. The pipeline verifies that the provider and OS
+directories agree with the definition and selects the matching provider root from
+the released template repository.
 
 ## Update Or Destroy
 
