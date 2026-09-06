@@ -119,8 +119,7 @@ concurrency is serialized per server.
 | `aws_account_id` | yes | Must be `134584031874` |
 | `aws_region` | yes | Target AWS region |
 | `workload` | yes | Stable owning workload identifier |
-| `server_name` | yes | Stable server identifier within the workload |
-| `instance_name` | yes | AWS EC2 `Name` tag; independent of path identity |
+| `server_name` | yes | Stable server identifier and AWS EC2 `Name` tag |
 | `desired_state` | yes | `present` or `absent` |
 | `os` | yes | OS catalog key defined by the pinned template release, such as `ubuntu24` |
 | `ami_id` | yes | Pinned vendor-owned AMI ID |
