@@ -46,6 +46,7 @@ existing instance in place.
   bootstrap-state.yml      # creates the central S3 state bucket
   ci.yml                   # validates workflow syntax
   request-server.yml       # manual IDP simulation
+  status-workloads.yml     # reports definition and deployment status
 mise.toml                  # pinned local and CI tool versions
 workloads/
   <workload>/<provider>/<os>/<server>/terraform.tfvars.json
@@ -110,6 +111,23 @@ workloads/<workload>/<provider>/<os>/<server_name>/terraform.tfvars.json
 Direct pushes that add or modify definitions on `definitions` also trigger
 reconciliation. Multiple changed definitions run independently in a matrix, and
 concurrency is serialized per server.
+
+## Deployment Status
+
+Run **Actions > Workload status > Run workflow** to inspect the current state of
+the definitions branch and AWS. The read-only report is published in the GitHub
+Actions job summary and includes:
+
+- detected, valid, and invalid definition counts
+- desired `present` and `absent` counts
+- Terraform state-object presence for each valid definition
+- managed EC2 totals and counts by instance state
+- all-account running EC2 count
+- per-definition status, matching instance IDs, and validation errors
+
+Managed instances are identified by the Terraform `ManagedBy=workloads-poc`,
+`Workload`, and `Name` tags. The workflow only reads definitions, S3 object
+metadata, and EC2 descriptions; it does not run Terraform or change resources.
 
 ## Definition Contract
 
