@@ -13,6 +13,11 @@ on:
         required: true
         default: server-1
         type: string
+      instance_name:
+        description: AWS Name tag for the instance
+        required: true
+        default: AppA Server 1
+        type: string
       desired_state:
         description: Create/update or destroy the server
         required: true
@@ -42,7 +47,7 @@ on:
         default: t3.micro
         type: string
       root_volume_size:
-        description: Root volume size in GiB (Windows minimum is 30)
+        description: Root volume size in GiB
         required: true
         default: 20
         type: number
@@ -84,6 +89,7 @@ jobs:
           AWS_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
           AWS_REGION: ${{ inputs.aws_region }}
           DESIRED_STATE: ${{ inputs.desired_state }}
+          INSTANCE_NAME: ${{ inputs.instance_name }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           OS: ${{ inputs.os }}
           ROOT_VOLUME_SIZE: ${{ inputs.root_volume_size }}
@@ -99,6 +105,7 @@ jobs:
           [[ "$AWS_ACCOUNT_ID" == "134584031874" ]]
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
           [[ "$SUBNET_ID" =~ ^subnet-[0-9a-f]{8,17}$ ]]
+          [[ "$INSTANCE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}$ ]]
           [[ "$INSTANCE_TYPE" =~ ^[a-z0-9][a-z0-9.-]*$ ]]
           [[ "$OS" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]
           [[ "$TEMPLATE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -146,6 +153,7 @@ jobs:
           AWS_REGION: ${{ inputs.aws_region }}
           DESIRED_STATE: ${{ inputs.desired_state }}
           DEFINITION_PATH: ${{ steps.request.outputs.definition_path }}
+          INSTANCE_NAME: ${{ inputs.instance_name }}
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           OS: ${{ inputs.os }}
           AMI_PARAMETER: ${{ steps.catalog.outputs.image_parameter }}
@@ -161,7 +169,9 @@ jobs:
           mkdir -p "$(dirname "$DEFINITION_PATH")"
 
           if [[ "$DESIRED_STATE" == "absent" ]]; then
-            jq '.desired_state = "absent"' "$DEFINITION_PATH" > "$RUNNER_TEMP/definition.json"
+            jq --arg instance_name "$INSTANCE_NAME" \
+              '.desired_state = "absent" | .instance_name = $instance_name' \
+              "$DEFINITION_PATH" > "$RUNNER_TEMP/definition.json"
           else
             ami_id="$(aws ssm get-parameter \
               --name "$AMI_PARAMETER" \
@@ -175,6 +185,7 @@ jobs:
               --arg aws_region "$AWS_REGION" \
               --arg workload "$WORKLOAD" \
               --arg server_name "$SERVER_NAME" \
+              --arg instance_name "$INSTANCE_NAME" \
               --arg desired_state "$DESIRED_STATE" \
               --arg os "$OS" \
               --arg ami_id "$ami_id" \
@@ -189,6 +200,7 @@ jobs:
                 aws_region: $aws_region,
                 workload: $workload,
                 server_name: $server_name,
+                instance_name: $instance_name,
                 desired_state: $desired_state,
                 os: $os,
                 ami_id: $ami_id,
