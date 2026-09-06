@@ -37,6 +37,7 @@ on:
       subnet_id:
         description: Existing subnet in account 134584031874
         required: true
+        default: subnet-0a1d48f2ff2bd0332
         type: string
       instance_type:
         description: EC2 instance type

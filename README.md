@@ -86,9 +86,10 @@ validates the request, resolves the current vendor AMI through AWS's public SSM
 parameter, pins that AMI ID in the JSON definition, commits the file to
 `definitions`, and explicitly dispatches reconciliation.
 
-The request requires an existing subnet from account `134584031874`; there is no
-cross-account option or subnet default. The managed security group has no
-ingress. Human access is through AWS Systems Manager Session Manager.
+The request defaults to public subnet `subnet-0a1d48f2ff2bd0332` in the existing
+`amirasyraf-amirasyraf-ap-southeast-1` VPC. There is no cross-account option. The
+managed security group has no ingress. Human access is through AWS Systems
+Manager Session Manager.
 
 The resulting path is:
 
