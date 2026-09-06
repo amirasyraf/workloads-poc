@@ -1,0 +1,180 @@
+name: Workload status
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_STATE_REGION: ${{ vars.AWS_STATE_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+
+jobs:
+  status:
+    name: Inspect deployments
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out definitions branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: definitions
+
+      - name: Install project tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: awscli jq
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          aws-region: ${{ env.AWS_STATE_REGION }}
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+
+      - name: Collect and publish status
+        env:
+          AWS_TARGET_ACCOUNT_ID: ${{ vars.AWS_TARGET_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+
+          work_dir="$RUNNER_TEMP/workload-status"
+          mkdir -p "$work_dir"
+          definitions="$work_dir/definitions.ndjson"
+          instances="$work_dir/instances.ndjson"
+          : > "$definitions"
+          : > "$instances"
+
+          definition_pattern='^workloads/([A-Za-z0-9][A-Za-z0-9_-]{0,31})/([a-z0-9][a-z0-9_-]{0,31})/([a-z0-9][a-z0-9_-]{0,31})/([A-Za-z0-9][A-Za-z0-9_-]{0,47})/terraform\.tfvars\.json$'
+
+          while IFS= read -r path; do
+            if [[ ! "$path" =~ $definition_pattern ]]; then
+              jq -cn --arg path "$path" --arg reason "invalid definition path" \
+                '{path: $path, valid: false, reason: $reason}' >> "$definitions"
+              continue
+            fi
+
+            workload="${BASH_REMATCH[1]}"
+            provider="${BASH_REMATCH[2]}"
+            os="${BASH_REMATCH[3]}"
+            server="${BASH_REMATCH[4]}"
+
+            if [[ "$provider" != "aws" ]] || ! jq -e \
+              --arg account "$AWS_TARGET_ACCOUNT_ID" \
+              --arg workload "$workload" \
+              --arg server "$server" \
+              'type == "object" and
+               .aws_account_id == $account and
+               .workload == $workload and
+               .server_name == $server and
+               (.template_version | type == "string" and test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+               (.desired_state == "present" or .desired_state == "absent") and
+               (.aws_region | type == "string" and test("^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$")) and
+               (.os == "'"$os"'") and
+               (.ami_id | type == "string" and test("^ami-[0-9a-f]{8,17}$")) and
+               (.subnet_id | type == "string" and test("^subnet-[0-9a-f]{8,17}$")) and
+               (.instance_type | type == "string" and length > 0) and
+               (.associate_public_ip_address | type == "boolean") and
+               (.root_volume_size | type == "number" and . >= 8 and . <= 16384 and floor == .)' \
+              "$path" >/dev/null 2>&1; then
+              jq -cn --arg path "$path" --arg reason "definition fields are invalid" \
+                '{path: $path, valid: false, reason: $reason}' >> "$definitions"
+              continue
+            fi
+
+            jq -cn \
+              --arg path "$path" \
+              --arg workload "$workload" \
+              --arg os "$os" \
+              --arg server "$server" \
+              --arg region "$(jq -r '.aws_region' "$path")" \
+              --arg desired_state "$(jq -r '.desired_state' "$path")" \
+              --arg state_key "${path%/terraform.tfvars.json}/terraform.tfstate" \
+              '{path: $path, valid: true, workload: $workload, os: $os,
+                server_name: $server, aws_region: $region,
+                desired_state: $desired_state, state_key: $state_key}' \
+              >> "$definitions"
+          done < <(git ls-files 'workloads/**/terraform.tfvars.json')
+
+          jq -s '.' "$definitions" > "$work_dir/definitions.json"
+          aws s3api list-objects-v2 --bucket "$TF_STATE_BUCKET" --prefix workloads/ \
+            --query 'Contents[].Key' --output json | jq 'if type == "array" then . else [] end' \
+            > "$work_dir/state-keys.json"
+
+          regions="$(aws ec2 describe-regions --query 'Regions[].RegionName' --output text)"
+          for region in $regions; do
+            aws ec2 describe-instances --region "$region" \
+              --filters Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down \
+              --output json | jq -c --arg region "$region" '
+                .Reservations[]?.Instances[]? |
+                {region: $region, instance_id: .InstanceId, state: .State.Name,
+                 name: ([.Tags[]? | select(.Key == "Name") | .Value] | first // ""),
+                 workload: ([.Tags[]? | select(.Key == "Workload") | .Value] | first // ""),
+                 managed_by: ([.Tags[]? | select(.Key == "ManagedBy") | .Value] | first // "")}' \
+              >> "$instances"
+          done
+
+          jq -s '.' "$instances" > "$work_dir/instances.json"
+          jq -n \
+            --slurpfile definitions "$work_dir/definitions.json" \
+            --slurpfile instances "$work_dir/instances.json" \
+            --slurpfile state_keys "$work_dir/state-keys.json" '
+            ($definitions[0] // []) as $definitions |
+            ($instances[0] // []) as $instances |
+            ($state_keys[0] // []) as $state_keys |
+            $definitions | map(
+              if .valid != true then
+                . + {status: "invalid", state_object: false, instance_ids: [], instance_state: null}
+              else
+                . as $definition |
+                [$instances[] | select(
+                  .managed_by == "workloads-poc" and
+                  .region == $definition.aws_region and
+                  .workload == $definition.workload and
+                  .name == $definition.server_name
+                )] as $matches |
+                (if ($matches | length) == 0 then
+                   if .desired_state == "absent" then "absent" else "missing" end
+                 elif ($matches | length) > 1 then "duplicate"
+                 elif .desired_state == "absent" then "unexpected"
+                 elif $matches[0].state == "running" then "running"
+                 elif $matches[0].state == "pending" then "provisioning"
+                 else "present-" + $matches[0].state
+                 end) as $status |
+                . + {
+                  status: $status,
+                  state_object: (($state_keys | index($definition.state_key)) != null),
+                  instance_ids: [$matches[].instance_id],
+                  instance_state: (if ($matches | length) == 1 then $matches[0].state else null end)
+                }
+              end
+            )' > "$work_dir/report.json"
+
+          total="$(jq 'length' "$work_dir/report.json")"
+          valid="$(jq '[.[] | select(.valid == true)] | length' "$work_dir/report.json")"
+          invalid="$(jq '[.[] | select(.valid != true)] | length' "$work_dir/report.json")"
+          present="$(jq '[.[] | select(.valid == true and .desired_state == "present")] | length' "$work_dir/report.json")"
+          absent="$(jq '[.[] | select(.valid == true and .desired_state == "absent")] | length' "$work_dir/report.json")"
+          managed="$(jq '[.[] | select(.managed_by == "workloads-poc")] | length' "$work_dir/instances.json")"
+          managed_running="$(jq '[.[] | select(.managed_by == "workloads-poc" and .state == "running")] | length' "$work_dir/instances.json")"
+          all_running="$(jq '[.[] | select(.state == "running")] | length' "$work_dir/instances.json")"
+
+          {
+            printf '# Workload Deployment Status\n\n'
+            printf '| Metric | Count |\n| --- | ---: |\n'
+            printf '| Definitions detected | %s |\n' "$total"
+            printf '| Valid definitions | %s |\n' "$valid"
+            printf '| Invalid definitions | %s |\n' "$invalid"
+            printf '| Desired present | %s |\n' "$present"
+            printf '| Desired absent | %s |\n' "$absent"
+            printf '| Managed EC2 instances | %s |\n' "$managed"
+            printf '| Managed EC2 running | %s |\n' "$managed_running"
+            printf '| All account EC2 running | %s |\n' "$all_running"
+            printf '\n## Definitions\n\n'
+            printf '| Definition | Desired | Status | State | Instance |\n| --- | --- | --- | --- | --- |\n'
+            jq -r '.[] | "| `" + .path + "` | " + (.desired_state // "-") + " | " + .status + " | " + (if .state_object then "yes" else "no" end) + " | " + ((.instance_ids // []) | if length == 0 then "-" else join(", ") end) + " |"' "$work_dir/report.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'Definitions: %s detected, %s valid, %s invalid\n' "$total" "$valid" "$invalid"
+          printf 'Managed EC2: %s total, %s running\n' "$managed" "$managed_running"
+          printf 'All account EC2 running: %s\n' "$all_running"
